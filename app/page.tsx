@@ -121,57 +121,62 @@ export default function SmartColdStorage() {
     });
 
     client.on("message", async (topic, message) => {
-      try {
-        const payload = JSON.parse(message.toString());
-        console.log("Menerima payload IoT:", payload);
+  try {
+    const payload = JSON.parse(message.toString());
+    console.log("Menerima payload IoT:", payload);
 
-        // 1. Petakan data JSON dari ESP32 ke State Next.js
-        if (payload.suhu !== undefined) setSuhu(Number(payload.suhu));
-        if (payload.amonia !== undefined) setAmonia(Number(payload.amonia));
-        
-        // 🚀 TANGKAP 2 DATA PINTU
-        if (payload.pintu_status !== undefined) setStatusPintu(Number(payload.pintu_status));
-        if (payload.pintu_frekuensi !== undefined) setFrekuensiPintu(Number(payload.pintu_frekuensi));
+    // 1. Petakan data JSON dari ESP32 ke State Next.js
+    if (payload.suhu !== undefined) setSuhu(Number(payload.suhu));
+    if (payload.amonia !== undefined) setAmonia(Number(payload.amonia));
+    
+    // 🚀 REVISI TOTAL LOGIKA PINTU: Langsung ambil status riil dari hardware
+    if (payload.pintu_status !== undefined) {
+      setStatusPintu(Number(payload.pintu_status)); // 1 = BUKA, 0 = TUTUP (Real-time tanpa timeout!)
+    }
+    
+    if (payload.pintu_freq !== undefined) {
+      setFrekuensiPintu(Number(payload.pintu_freq)); // Set angka akumulasi counter
+    }
 
-        // 2. Data sensor HANYA dijebloskan ke Supabase jika status Tombol Start AKTIF!
-        const { data: userStatus } = await supabase
-          .from("users_profile")
-          .select("is_monitoring")
-          .eq("username", savedUsername)
-          .maybeSingle();
+    // 2. Data sensor dimasukkan ke Supabase jika monitoring AKTIF
+    const { data: userStatus } = await supabase
+      .from("users_profile")
+      .select("is_monitoring")
+      .eq("username", savedUsername)
+      .maybeSingle();
 
-        if (userStatus && userStatus.is_monitoring) {
-          const { error } = await supabase
-            .from("sensor_logs") 
-            .insert([
-              { 
-                suhu: Number(payload.suhu), 
-                amonia: Number(payload.amonia), 
-                // Database tetap menyimpan status asli pintu (buka/tutup)
-                pintu: Number(payload.pintu_status !== undefined ? payload.pintu_status : statusPintu) 
-              }
-            ]);
-
-          if (error) {
-            console.error("Gagal backup ke Supabase:", error.message);
-          } else {
-            console.log("Data sensor sukses tercatat di Supabase! 💾");
+    if (userStatus && userStatus.is_monitoring) {
+      const { error } = await supabase
+        .from("sensor_logs") 
+        .insert([
+          { 
+            suhu: Number(payload.suhu), 
+            amonia: Number(payload.amonia), 
+            // Kirim status biner riil saat ini (0/1) ke database history
+            pintu: Number(payload.pintu_status !== undefined ? payload.pintu_status : 0) 
           }
-        } else {
-          console.log("Sistem Mode Standby. Data sensor diabaikan (Belum klik Start Monitoring).");
-        }
+        ]);
 
-      } catch (error) {
-        console.error("Gagal parsing data IoT (Pastikan format kiriman ESP32 berupa JSON):", error);
+      if (error) {
+        console.error("Gagal backup ke Supabase:", error.message);
+      } else {
+        console.log("Data sensor sukses tercatat di Supabase! 💾");
       }
-    });
+    } else {
+      console.log("Sistem Mode Standby. Data sensor diabaikan.");
+    }
+
+  } catch (error) {
+    console.error("Gagal parsing data IoT:", error);
+  }
+});
 
     // Bersihkan koneksi (disconnect) jika tab berpindah atau web di-refresh
     return () => {
       console.log("Memutus koneksi MQTT (Clean Up)...");
       client.end();
     };
-  }, [activeTab, savedUsername, statusPintu]);
+  }, [activeTab, savedUsername, statusPintu, frekuensiPintu]);
 
   // Jam Realtime Digital
   useEffect(() => {
@@ -924,7 +929,7 @@ export default function SmartColdStorage() {
                 </span>
               </div>
 
-              {/* 🔥 CARD 2: DOOR CLOSURE (UI TETAP UTUH, DITAMBAH TEKS FREKUENSI) 🔥 */}
+              {/* 🔥 CARD 2: DOOR CLOSURE (UI TETAP UTUH, LOGIC FIXED IKUT SENSOR MAGNET) 🔥 */}
               <div className="bg-[#161b22]/90 border border-slate-800 p-5 rounded-xl flex flex-col justify-between min-h-[140px] shadow-lg backdrop-blur-sm">
                 <div className="flex justify-between items-start">
                   <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Status Pintu</span>
