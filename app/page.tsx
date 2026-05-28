@@ -104,12 +104,17 @@ export default function SmartColdStorage() {
     }
   }, []);
 
-  // ==========================================
+// ==========================================
   // 🛰️ LOGIKA KONEKSI MQTT LIVE (HIVEMQ) + AUTO-PUSH SUPABASE
   // ==========================================
+  const isFirstPayload = useRef(true); // 🚀 BYPASS HITUNGAN AWAL: Flag pengunci payload pertama
+
   useEffect(() => {
     // Jalankan koneksi hanya jika user sudah login dan berada di dashboard
     if (activeTab !== "dashboard") return;
+
+    // Reset flag setiap kali masuk ke dashboard
+    isFirstPayload.current = true;
 
     console.log("Mencoba menyambungkan ke broker cedepastibisa...");
     const client = connectMQTT();
@@ -121,62 +126,68 @@ export default function SmartColdStorage() {
     });
 
     client.on("message", async (topic, message) => {
-  try {
-    const payload = JSON.parse(message.toString());
-    console.log("Menerima payload IoT:", payload);
+      try {
+        const payload = JSON.parse(message.toString());
+        console.log("Menerima payload IoT:", payload);
 
-    // 1. Petakan data JSON dari ESP32 ke State Next.js
-    if (payload.suhu !== undefined) setSuhu(Number(payload.suhu));
-    if (payload.amonia !== undefined) setAmonia(Number(payload.amonia));
-    
-    // 🚀 REVISI TOTAL LOGIKA PINTU: Langsung ambil status riil dari hardware
-    if (payload.pintu_status !== undefined) {
-      setStatusPintu(Number(payload.pintu_status)); // 1 = BUKA, 0 = TUTUP (Real-time tanpa timeout!)
-    }
-    
-    if (payload.pintu_freq !== undefined) {
-      setFrekuensiPintu(Number(payload.pintu_freq)); // Set angka akumulasi counter
-    }
-
-    // 2. Data sensor dimasukkan ke Supabase jika monitoring AKTIF
-    const { data: userStatus } = await supabase
-      .from("users_profile")
-      .select("is_monitoring")
-      .eq("username", savedUsername)
-      .maybeSingle();
-
-    if (userStatus && userStatus.is_monitoring) {
-      const { error } = await supabase
-        .from("sensor_logs") 
-        .insert([
-          { 
-            suhu: Number(payload.suhu), 
-            amonia: Number(payload.amonia), 
-            // Kirim status biner riil saat ini (0/1) ke database history
-            pintu: Number(payload.pintu_status !== undefined ? payload.pintu_status : 0) 
+        // 1. Petakan data JSON dari ESP32 ke State Next.js
+        if (payload.suhu !== undefined) setSuhu(Number(payload.suhu));
+        if (payload.amonia !== undefined) setAmonia(Number(payload.amonia));
+        
+        // 🚀 REVISI TOTAL LOGIKA PINTU: Langsung ambil status riil dari hardware
+        if (payload.pintu_status !== undefined) {
+          setStatusPintu(Number(payload.pintu_status)); // 1 = BUKA, 0 = TUTUP
+        }
+        
+        if (payload.pintu_freq !== undefined) {
+          // 🚀 PROTEKSI CLOUD: Jika ini data pertama kali saat web dibuka, paksa jadi 0
+          if (isFirstPayload.current) {
+            setFrekuensiPintu(0);
+            isFirstPayload.current = false; // Kunci dibuka untuk pengiriman berikutnya
+            console.log("Payload pertama diamankan. Frekuensi dipaksa 0.");
+          } else {
+            setFrekuensiPintu(Number(payload.pintu_freq)); // Set angka akumulasi counter normal
           }
-        ]);
+        }
 
-      if (error) {
-        console.error("Gagal backup ke Supabase:", error.message);
-      } else {
-        console.log("Data sensor sukses tercatat di Supabase! 💾");
+        // 2. Data sensor dimasukkan ke Supabase jika monitoring AKTIF
+        const { data: userStatus } = await supabase
+          .from("users_profile")
+          .select("is_monitoring")
+          .eq("username", savedUsername)
+          .maybeSingle();
+
+        if (userStatus && userStatus.is_monitoring) {
+          const { error } = await supabase
+            .from("sensor_logs") 
+            .insert([
+              { 
+                suhu: Number(payload.suhu), 
+                amonia: Number(payload.amonia), 
+                pintu: Number(payload.pintu_status !== undefined ? payload.pintu_status : 0) 
+              }
+            ]);
+
+          if (error) {
+            console.error("Gagal backup ke Supabase:", error.message);
+          } else {
+            console.log("Data sensor sukses tercatat di Supabase! 💾");
+          }
+        } else {
+          console.log("Sistem Mode Standby. Data sensor diabaikan.");
+        }
+
+      } catch (error) {
+        console.error("Gagal parsing data IoT:", error);
       }
-    } else {
-      console.log("Sistem Mode Standby. Data sensor diabaikan.");
-    }
-
-  } catch (error) {
-    console.error("Gagal parsing data IoT:", error);
-  }
-});
+    });
 
     // Bersihkan koneksi (disconnect) jika tab berpindah atau web di-refresh
     return () => {
       console.log("Memutus koneksi MQTT (Clean Up)...");
       client.end();
     };
-  }, [activeTab, savedUsername, statusPintu, frekuensiPintu]);
+  }, [activeTab, savedUsername]);
 
   // Jam Realtime Digital
   useEffect(() => {
